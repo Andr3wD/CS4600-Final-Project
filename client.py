@@ -34,11 +34,17 @@ class Client:
         await self.connection.send(json.dumps(message))
         return await self.recv_unhandled()
 
+    async def join(self, group, participant):
+        return await self.send({'type': 'join', 'group': group, 'participant': participant})
+
+    async def send_to_participant(self, participant, message):
+        return await self.send({'type': 'send', 'participant': participant, 'message': message})
+
 
 async def main():
     client = await Client.create()
-    print(await client.send({'type': 'join', 'group': 'first', 'participant': 'Alice'}))
-    print(await client.send({'type': 'send', 'participant': 'Alice', 'message': ['test']}))
+    print(await client.join('first', 'Alice'))
+    print(await client.send_to_participant('Alice', ['test', 123]))
 
 if __name__ == '__main__':
     loop = asyncio.get_event_loop()
