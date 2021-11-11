@@ -14,6 +14,12 @@ class Group:
         self.name = name
         self.participants = participants
 
+    def get_participant(self, name):
+        for participant in self.participants:
+            if participant.name == name:
+                return participant
+        return None
+
 
 groups = [
     Group('first', [
@@ -38,6 +44,7 @@ def get_group(name):
 class Session:
     def __init__(self, connection):
         self.connection = connection
+        self.group = None
         self.participating_as = None
 
     async def handle_messages(self):
@@ -54,6 +61,9 @@ class Session:
         except:
             pass
 
+    async def send_success(self):
+        await self.send_message({'type': 'success'})
+
     async def send_error(self, description):
         await self.send_message({'type': 'error', 'description': description})
 
@@ -67,15 +77,57 @@ class Session:
             await self.send_error('Message must specify its type.')
             return
         t = message['type']
+
         if t == 'join':
             if self.participating_as is not None:
-                pass
-            await self.send_error('unimplemented')
+                await self.send_error('You have already joined a group.')
+                return
+            if 'group' not in message.keys():
+                await self.send_error('Missing required parameter "group".')
+                return
+            self.group = get_group(message['group'])
+            if self.group is None:
+                await self.send_error('Invalid group.')
+                return
+            if 'participant' not in message.keys():
+                await self.send_error('Missing required parameter "participant".')
+                return
+            participant = self.group.get_participant(message['participant'])
+            if participant is None:
+                await self.send_error('Invalid participant.')
+                return
+            if participant.session is not None:
+                await self.send_error('That participant has already joined.')
+                return
+            self.participating_as = participant
+            participant.session = self
+            await self.send_success()
+        elif t == 'send':
+            if self.group is None:
+                await self.send_error('You have not joined a group.')
+                return
+            if 'participant' not in message.keys():
+                await self.send_error('Missing required parameter "participant".')
+                return
+            participant = self.group.get_participant(message['participant'])
+            if participant is None:
+                await self.send_error('Invalid participant.')
+                return
+            if participant.session is None:
+                await self.send_error('That participant has not yet joined.')
+                return
+            if 'message' not in message.keys():
+                await self.send_error('Missing required parameter "message".')
+                return
+            await participant.session.send_message({'type': 'receive', 'from': self.participating_as.name, 'message': message['message']})
+            await self.send_success()
         else:
             await self.send_error('Unrecognized message type ' + t)
 
     async def handle_closed(self):
-        pass
+        if self.participating_as is not None:
+            self.participating_as.session = None
+            self.participating_as = None
 
 
 async def handler(connection, _path):
