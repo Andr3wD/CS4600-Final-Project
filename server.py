@@ -13,6 +13,18 @@ class Group:
     def __init__(self, name, participants):
         self.name = name
         self.participants = participants
+        self.anonymous_messages = []
+
+    async def try_start_anonymous_message(self):
+        for participant in self.participants:
+            if participant.session is None:
+                return False
+        index = len(self.anonymous_messages)
+        self.anonymous_messages.append({})
+        for participant in self.participants:
+            await participant.session.send_message(
+                {'type': 'anonymous_broadcast_request', 'index': index})
+        return True
 
     def get_participant(self, name):
         for participant in self.participants:
@@ -51,7 +63,8 @@ class Session:
         try:
             async for message in self.connection:
                 await self.handle_message(message)
-        except:
+        except Exception as e:
+            print(e)
             await self.handle_closed()
 
     async def send_message(self, message):
@@ -102,7 +115,7 @@ class Session:
             self.participating_as = participant
             participant.session = self
             await self.send_success()
-        elif t == 'send':
+        elif t == 'send_to_peer':
             if self.group is None:
                 await self.send_error('You have not joined a group.')
                 return
@@ -119,7 +132,33 @@ class Session:
             if 'message' not in message.keys():
                 await self.send_error('Missing required parameter "message".')
                 return
-            await participant.session.send_message({'type': 'receive', 'from': self.participating_as.name, 'message': message['message']})
+            await participant.session.send_message({'type': 'receive_from_peer', 'from': self.participating_as.name, 'message': message['message']})
+            await self.send_success()
+        elif t == 'anonymous_broadcast':
+            if self.group is None:
+                await self.send_error('You have not joined a group.')
+                return
+            if 'index' not in message.keys():
+                await self.send_error('Missing required parameter "index".')
+                return
+            index = message['index']
+            if index >= len(self.group.anonymous_messages):
+                await self.send_error('Invalid index.')
+                return
+            if 'message' not in message.keys():
+                await self.send_error('Missing required parameter "message".')
+                return
+            message = message['message']
+            if self.participating_as.name in self.group.anonymous_messages[index].keys():
+                await self.send_error('Cannot submit multiple messages for the same slot.')
+                return
+            messages = self.group.anonymous_messages[index]
+            messages[self.participating_as.name] = message
+            if len(messages) == len(self.group.participants):
+                send = {'type': 'anonymous_broadcast', 'messages': messages}
+                for participant in self.group.participants:
+                    if participant.session is not None:
+                        await participant.session.send_message(send)
             await self.send_success()
         else:
             await self.send_error('Unrecognized message type ' + t)
@@ -134,10 +173,19 @@ async def handler(connection, _path):
     await Session(connection).handle_messages()
 
 
+async def continually_send_anonymous_broadcast_requests():
+    while True:
+        for group in groups:
+            await group.try_start_anonymous_message()
+        await asyncio.sleep(2)
+
+
 def main():
     server = websockets.serve(handler, 'localhost', 12345)
     asyncio.get_event_loop().run_until_complete(server)
     print('Server running!')
+    asyncio.get_event_loop().create_task(
+        continually_send_anonymous_broadcast_requests())
     asyncio.get_event_loop().run_forever()
 
 
