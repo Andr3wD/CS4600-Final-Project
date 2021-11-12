@@ -155,7 +155,7 @@ class Session:
             messages = self.group.anonymous_messages[index]
             messages[self.participating_as.name] = message
             if len(messages) == len(self.group.participants):
-                send = {'type': 'anonymous_broadcast', 'messages': messages}
+                send = {'type': 'anonymous_broadcast', 'messages': messages, 'index': index}
                 for participant in self.group.participants:
                     if participant.session is not None:
                         await participant.session.send_message(send)
