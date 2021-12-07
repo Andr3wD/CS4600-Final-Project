@@ -26,6 +26,9 @@ class Group:
                 {'type': 'anonymous_broadcast_request', 'index': index})
         return True
 
+    def get_active_participants(self):
+        return [p for p in self.participants if p.session is not None]
+
     def get_participant(self, name):
         for participant in self.participants:
             if participant.name == name:
@@ -113,8 +116,15 @@ class Session:
                 await self.send_error('That participant has already joined.')
                 return
             self.participating_as = participant
+
+            # Tell all participants about the new client.
+            temp_old = self.group.get_active_participants()
             participant.session = self
-            await self.send_success()
+            temp_new = [p.name for p in self.group.get_active_participants()]
+            for part in temp_old:
+                await part.session.send_message({'type': 'active_participant_update', 'active_participants': temp_new})
+
+            await self.send_message({'type': 'success', 'active_participants': temp_new})
         elif t == 'send_to_peer':
             if self.group is None:
                 await self.send_error('You have not joined a group.')
@@ -177,7 +187,7 @@ async def continually_send_anonymous_broadcast_requests():
     while True:
         for group in groups:
             await group.try_start_anonymous_message()
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
 
 
 def main():
