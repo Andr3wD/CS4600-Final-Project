@@ -1,7 +1,7 @@
 import asyncio
 import json
 import websockets
-
+import socket
 
 # Represents someone belonging to a group which may or may not 
 # be connected at the moment.
@@ -246,7 +246,8 @@ async def handler(connection, _path):
 # Starts several long-running tasks necessary for the protocol to operate correctly.
 def main():
     # Run a websocket server, using handler(...) to create sessions for every incoming connection.
-    server = websockets.serve(handler, 'localhost', 12345)
+    self_ip = socket.gethostbyname(socket.gethostname())
+    server = websockets.serve(handler, self_ip, 12345)
     asyncio.get_event_loop().run_until_complete(server)
     print('Server running!')
     # Try starting anonymous broadcast every second.
