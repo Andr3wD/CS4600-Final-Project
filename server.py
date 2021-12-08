@@ -9,6 +9,7 @@ class Participant:
     def __init__(self, name):
         self.name = name
         self.session = None
+        self.secrets_generated = False
 
 
 # A collection of participants
@@ -24,8 +25,9 @@ class Group:
     # are connected.
     async def try_start_anonymous_message(self):
         for participant in self.participants:
-            if participant.session is None:
+            if participant.session is None or not participant.secrets_generated:
                 return False
+
         index = len(self.anonymous_messages)
         self.anonymous_messages.append({})
         for participant in self.participants:
@@ -45,6 +47,22 @@ class Group:
                 return participant
         return None
 
+    def check_all_secrets_generated(self):
+        for participant in self.participants:
+            if participant.session is None or not participant.secrets_generated:
+                return False
+        return True
+
+    def check_all_participants_joined(self):
+        for part in self.participants:
+            if part.session is None:
+                return False
+        return True
+
+    async def start_secret_generation(self):
+        for part in self.participants:
+            if part.session is not None:
+                await part.session.send_message({'type': 'generate_secrets'})
 
 # Predefined list of groups that exist.
 groups = [
@@ -155,8 +173,14 @@ class Session:
 
             # Inform the client that they joined successfully, as well as who else has joined.
             await self.send_message({'type': 'success', 'active_participants': temp_new})
+
+            # Ask clients to generate secrets among themselves.
+            if self.group.check_all_participants_joined():
+                await self.group.start_secret_generation()
+                
+
         # Indicates that a client wants to send a message to someone else in the group.
-        elif t == 'send_to_peer':
+        elif t == 'send_to_peer' or t == 'send_to_peer_secret_handshake':
             # Error if the client isn't in a group.
             if self.group is None:
                 await self.send_error('You have not joined a group.')
@@ -176,8 +200,13 @@ class Session:
             if 'message' not in message.keys():
                 await self.send_error('Missing required parameter "message".')
                 return
-            # Send the recipient the message.
-            await participant.session.send_message({'type': 'receive_from_peer', 'from': self.participating_as.name, 'message': message['message']})
+
+            if t == 'send_to_peer_secret_handshake':
+                await participant.session.send_message({'type': 'receive_from_peer_secret_handshake', 'from': self.participating_as.name, 'message': message['message']})
+            else:
+                # Send the recipient the message.
+                await participant.session.send_message({'type': 'receive_from_peer', 'from': self.participating_as.name, 'message': message['message']})
+
             # Tell the sender it worked out.
             await self.send_success()
         # Indicates the client has a contribution for an anonymous broadcast.
@@ -214,6 +243,8 @@ class Session:
                         await participant.session.send_message(send)
             # Inform the client that the request was successful.
             await self.send_success()
+        elif t == 'secrets_generated':
+            self.participating_as.secrets_generated = True
         else:
             # Error on unrecognized type
             await self.send_error('Unrecognized message type ' + t)
@@ -225,6 +256,12 @@ class Session:
             # that participant is no longer connected.
             self.participating_as.session = None
             self.participating_as = None
+
+            # TODO make this actually do something on the client side...
+            current_parts = self.group.get_active_participants()
+            active_parts = [p.name for p in current_parts]
+            for part in current_parts:
+                await part.session.send_message({'type': 'active_participant_update', 'active_participants': active_parts})
 
 
 # Long-running task that tries to send anonymous message broadcast requests to participants

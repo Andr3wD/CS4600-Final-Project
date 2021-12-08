@@ -5,8 +5,22 @@ import random
 import sys
 import secrets
 import PySimpleGUI as gui
-import Crypto
+from Crypto.PublicKey import RSA
+from Crypto.Signature import pkcs1_15
+from Crypto.Hash import SHA256
+from Crypto.Cipher import PKCS1_OAEP, AES
+from Crypto.Random import get_random_bytes
 import socket
+import os
+import time
+import base64
+
+
+public_keyring = {
+    "Andrew": "andrew_public.pem",
+    "Josh": "josh_public.pem",
+    "Hannah": "hannah_public.pem"
+}
 
 class Client:
     @classmethod # Since python doesn't let `async def __init__()`
@@ -20,19 +34,16 @@ class Client:
         self.connection = await websockets.connect(f'ws://{self_ip}:12345') # Connect to server
         self.unhandled_messages = asyncio.Queue()
         self.active_participants = []
-        self.secrets = [5436] # All secret pairs this client has with other clients. TODO remove the testing numbers.
+        self.secrets = {} # All secret pairs this client has with other clients.
+        self.secret_handshakes = {} # Keep track of handshake progress {participant_name: stage} where stage=1 if initiated by one side, and stage=2 if done.
         self.message_send_queue = []
         self.sent_messages = {}
         self.unhandled_anon_messages = []
         self.collision_timeout = 0
         self.MAX_MESSAGE_BYTES = 280
+        self.name = ""
         asyncio.get_event_loop().create_task(self.poll_loop()) # Start polling for messages.
         return self
-
-    def pairwise_secrets(self):
-        nonce = random.getrandbits(256)
-        for participants in self.active_participants
-            
 
     async def poll_loop(self):
         while True:
@@ -53,8 +64,97 @@ class Client:
             elif message['type'] == 'active_participant_update':
                 print("new participants", message)
                 self.active_participants = message['active_participants']
+            elif message['type'] == 'generate_secrets':
+                print("generating secrets")
+                asyncio.get_event_loop().create_task(
+                    self.generate_pairwise_secrets()
+                )
+            elif message['type'] == 'receive_from_peer_secret_handshake':
+                asyncio.get_event_loop().create_task(
+                    self.handle_handshake_receive_from_peer(message['from'], message['message'])
+                )
             else:
                 await self.unhandled_messages.put(message)
+
+    async def handle_handshake_receive_from_peer(self, from_member: str, message):
+        with open(self.name.lower() + "_private.pem", 'r') as priv_file:
+            our_key = RSA.importKey(priv_file.read())
+            our_dec = PKCS1_OAEP.new(our_key)
+            with open(public_keyring[from_member], 'r') as file:
+                part_key = RSA.importKey(file.read())
+                part_sig = pkcs1_15.new(part_key) # to verify signature
+
+                print("FROM:", from_member)
+                print("message:\n",message)
+
+                # Decrypt session key using RSA.
+                session_key = our_dec.decrypt(bytes.fromhex(message["session_key"]))
+                session_aes = AES.new(session_key, AES.MODE_EAX, bytes.fromhex(message["cipher_nonce"]))
+                plaintext = session_aes.decrypt_and_verify(bytes.fromhex(message["ciphertext"]), bytes.fromhex(message["tag"]))
+                package = json.loads(plaintext.decode("utf-8"))
+
+                print("json plain:\n", package)
+
+                # Verify signature and timestamp.
+
+                timediff = int(time.time()) - package["timestamp"]
+                if timediff < 30:
+                    h = SHA256.new(str(package["nonce"]).encode())
+                    valid = False
+                    try:
+                        part_sig.verify(h, bytes.fromhex(package["signature"]))
+                        valid = True
+                    except ValueError:
+                        pass
+
+                    if valid:
+                        # message came from this participant.
+                        if from_member not in self.secrets:
+                            self.secrets[from_member] = 0
+                            self.secret_handshakes[from_member] = 1 # Keep track of handshake progress
+                        else:
+                            self.secret_handshakes[from_member] += 1 # Keep track of handshake progress
+
+                        self.secrets[from_member] ^= int(package["nonce"])
+                    else:
+                        print("BAD SIGNATURE FROM:", from_member)
+
+                else:
+                    print(f"BAD TIMESTAMP {timediff} > 30 FROM: {from_member}") #TODO handle better.
+
+
+                    # if timediff < 30:
+                    #     print("trying to verify")
+                    #     h = SHA256.new(package["nonce"])
+                    #     if pkcs1_15.new(part_key).verify(h, bin(package["signature"])):
+                    #         if from_member not in self.secrets:
+                    #             self.secrets[from_member] = 0
+                    #             self.secret_handshakes[from_member] = 1 # Keep track of handshake progress
+                    #         else:
+                    #             self.secret_handshakes[from_member] += 1 # Keep track of handshake progress
+
+                    #         self.secrets[from_member] ^= int(package["nonce"])
+                    #     else:
+                    #         print("BAD SIGNATURE FROM:", from_member)
+                    # else:
+                    #     print(f"BAD TIMESTAMP {timediff} > 30 FROM: {from_member}") #TODO handle better.
+                    # to_send = json.dumps({"nonce": nonce, "signature": our_key.sign(nonce), "timestamp": int(time.time())})
+
+
+        # if recieve all secrets, then send OK.
+        # record recv from each user.
+        if self.check_secret_handshake_complete():
+            print("ALL NONCES RECEIVED!")
+            await self.send({'type': 'secrets_generated'})
+        else:
+            print("still waiting for participant nonces")
+
+    def check_secret_handshake_complete(self):
+        for part in self.active_participants:
+            if part != self.name and (part not in self.secret_handshakes or self.secret_handshakes[part] != 2):
+                return False
+        return True
+
 
     async def handle_receive_from_peer(self, from_member: str, message: str):
         print('received', message, 'from', from_member)
@@ -210,9 +310,9 @@ class Client:
         if self.collision_timeout > 0:
             self.collision_timeout -= 1
 
-        for secret in self.secrets:
+        for part in self.secrets:
             # One of the papers uses a random seed, but some sort of key generation scheme probably works as well.
-            random.seed(secret ^ index)
+            random.seed(self.secrets[part] ^ index)
             temp_msg ^= random.getrandbits((self.MAX_MESSAGE_BYTES*8)+collision_padding) # Twitter character limit is 280. *8 for 1/byte character ASCII encoding.
 
         await self.send({'type': 'anonymous_broadcast', 'index': index, 'message': temp_msg})
@@ -225,6 +325,38 @@ class Client:
             An immediate response cannot be guaranteed.
         """
         self.message_send_queue.append(message)
+
+    async def generate_pairwise_secrets(self):
+        nonce = random.getrandbits(256)
+        # Sign with self private key, then encrypt with participant's public key.
+
+        with open(self.name.lower() + "_private.pem", 'r') as priv_file:
+            our_key = RSA.importKey(priv_file.read())
+            for part in self.active_participants:
+                if part != self.name:
+                    with open(public_keyring[part], 'r') as file:
+                        print("sending to", part)
+                        if part not in self.secrets:
+                            self.secrets[part] = 0
+                            self.secret_handshakes[part] = 1
+                        else:
+                            self.secret_handshakes[part] += 1
+
+                        self.secrets[part] ^= nonce
+                        part_key = RSA.importKey(file.read())
+                        part_enc = PKCS1_OAEP.new(part_key)
+                        session_key = get_random_bytes(16)
+
+                        h = SHA256.new(str(nonce).encode()) # why must we do this, python.
+                        signature = pkcs1_15.new(our_key).sign(h)
+                        timestamp = int(time.time())
+                        print(f"GENERATING NONCE {nonce} FOR {part} WITH SIGNATURE HEX {signature.hex()}")
+                        session_aes = AES.new(session_key, AES.MODE_EAX)
+                        ciphertext, tag = session_aes.encrypt_and_digest(json.dumps({"timestamp": timestamp, "nonce": nonce, "signature": signature.hex()}).encode())
+                        to_send = {'session_key': part_enc.encrypt(session_key).hex(), "ciphertext": ciphertext.hex(), "cipher_nonce": session_aes.nonce.hex(), "tag": tag.hex()}
+
+                        await self.send_peer_secret_handshake(part, to_send)
+
 
     # Waits for a message that cannot be automatically handled. (I.E. the result
     # of some operation.)
@@ -241,6 +373,8 @@ class Client:
     async def send_to_peer(self, participant: str, message):
         return await self.send({'type': 'send_to_peer', 'participant': participant, 'message': message})
 
+    async def send_peer_secret_handshake(self, participant: str, message):
+        return await self.send({'type': 'send_to_peer_secret_handshake', 'participant': participant, 'message': message})
 
 async def main():
     client = await Client.create()
@@ -263,8 +397,8 @@ async def startGUI():
         [gui.Input()],
         [gui.Text("Please input your name below.")],
         [gui.Input()],
-		[gui.Text("Please input the group password below.")],
-		[gui.Input(password_char='*')],
+        [gui.Text("Please input the group password below.")],
+        [gui.Input(password_char='*')],
         [gui.Button("Join", bind_return_key=True), gui.Button("Quit"), gui.Text(text_color="Red", key="-ERR-")]
     ]
 
@@ -277,7 +411,7 @@ async def startGUI():
         if event == "Quit" or event == gui.WINDOW_CLOSED:
             exit()
         elif event == "Join":
-            if values[0] != '' and values[1] != '':
+            if values[0] != '' and values[1] != '' and values[2] != '':
                 response = await client.join(values[0], values[1], values[2])
                 print(response)
                 print(response["type"])
@@ -285,12 +419,13 @@ async def startGUI():
                     window["-ERR-"].update(value=response["description"])
                 elif response["type"] == "success":
                     client.active_participants = response["active_participants"]
+                    client.name = values[1]
                     future = asyncio.ensure_future(generate_and_poll_chat(client))
                     window.close()
                     await future
                     break
             else:
-                window["-ERR-"].update(value="Missing group or user name!")
+                window["-ERR-"].update(value="Missing group, user name, and/or password!")
 
 
 async def generate_and_poll_chat(client: Client):
