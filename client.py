@@ -29,8 +29,8 @@ class Client:
         """
 
         self = Client()
-        self_ip = socket.gethostbyname(socket.gethostname())
-        self.connection = await websockets.connect(f'ws://{self_ip}:12345') # Connect to server
+        # self_ip = socket.gethostbyname(socket.gethostname())
+        self.connection = await websockets.connect('ws://3.82.218.10:12345') # Connect to server
         self.unhandled_messages = asyncio.Queue()
         self.active_participants = []
         self.secrets = {} # All secret pairs this client has with other clients.
