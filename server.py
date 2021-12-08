@@ -1,7 +1,6 @@
 import asyncio
 import json
 import websockets
-import socket
 
 
 class Participant:
@@ -11,9 +10,10 @@ class Participant:
 
 
 class Group:
-    def __init__(self, name, participants):
+    def __init__(self, name, participants, password):
         self.name = name
         self.participants = participants
+        self.password = password
         self.anonymous_messages = []
 
     async def try_start_anonymous_message(self):
@@ -38,15 +38,16 @@ class Group:
 
 
 groups = [
-    Group('first', [
+    Group('test', [
         Participant('Alice'),
         Participant('Bob'),
-    ]),
-    Group('second', [
-        Participant('Eve'),
-        Participant('Eve\'s not-evil twin sister'),
-    ]),
-    Group('big', [Participant(name) for name in 'abcdefghijklmnopqrstuvwxyz'])
+    ], 'password'),
+    Group('demo', [
+        Participant('Andrew'),
+        Participant('Josh'),
+        Participant('Hannah')
+    ], 'CS4600'),
+    Group('big', [Participant(name) for name in 'abcdefghijklmnopqrstuvwxyz'], 'bigpassword')
 ]
 
 
@@ -192,8 +193,7 @@ async def continually_send_anonymous_broadcast_requests():
 
 
 def main():
-    self_ip = socket.gethostbyname(socket.gethostname())
-    server = websockets.serve(handler, self_ip, 12345)
+    server = websockets.serve(handler, 'localhost', 12345)
     asyncio.get_event_loop().run_until_complete(server)
     print('Server running!')
     asyncio.get_event_loop().create_task(

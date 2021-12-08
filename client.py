@@ -5,7 +5,7 @@ import random
 import sys
 import secrets
 import PySimpleGUI as gui
-import socket
+import Crypto
 
 class Client:
     @classmethod # Since python doesn't let `async def __init__()`
@@ -15,8 +15,7 @@ class Client:
         """
 
         self = Client()
-        self_ip = socket.gethostbyname(socket.gethostname())
-        self.connection = await websockets.connect(f'ws://{self_ip}:12345') # Connect to server
+        self.connection = await websockets.connect('ws://localhost:12345') # Connect to server
         self.unhandled_messages = asyncio.Queue()
         self.active_participants = []
         self.secrets = [5436] # All secret pairs this client has with other clients. TODO remove the testing numbers.
@@ -27,6 +26,11 @@ class Client:
         self.MAX_MESSAGE_BYTES = 280
         asyncio.get_event_loop().create_task(self.poll_loop()) # Start polling for messages.
         return self
+
+    def pairwise_secrets(self):
+        nonce = random.getrandbits(256)
+        for participants in self.active_participants
+            
 
     async def poll_loop(self):
         while True:
@@ -229,8 +233,8 @@ class Client:
         await self.connection.send(json.dumps(message))
         return await self.recv_unhandled()
 
-    async def join(self, group: str, participant: str):
-        return await self.send({'type': 'join', 'group': group, 'participant': participant})
+    async def join(self, group: str, participant: str, password: str):
+        return await self.send({'type': 'join', 'group': group, 'participant': participant, 'password': password})
 
     async def send_to_peer(self, participant: str, message):
         return await self.send({'type': 'send_to_peer', 'participant': participant, 'message': message})
@@ -240,13 +244,14 @@ async def main():
     client = await Client.create()
     group = input('Enter group name > ')
     participant = input('Enter participant name > ')
+    password = input('Enter group password > ')
     # TESTING
     if participant == "Bob":
         client.message_send_queue.append("testmsg from BOB")
     else:
         client.message_send_queue.append("testmsg from ALICE")
 
-    print(await client.join(group, participant))
+    print(await client.join(group, participant, password))
     print(await client.send_to_peer('Alice', ['test', 123]))
 
 
@@ -256,6 +261,8 @@ async def startGUI():
         [gui.Input()],
         [gui.Text("Please input your name below.")],
         [gui.Input()],
+		[gui.Text("Please input the group password below.")],
+		[gui.Input(password_char='*')],
         [gui.Button("Join", bind_return_key=True), gui.Button("Quit"), gui.Text(text_color="Red", key="-ERR-")]
     ]
 
@@ -269,7 +276,7 @@ async def startGUI():
             exit()
         elif event == "Join":
             if values[0] != '' and values[1] != '':
-                response = await client.join(values[0], values[1])
+                response = await client.join(values[0], values[1], values[2])
                 print(response)
                 print(response["type"])
                 if response["type"] == "error":
