@@ -13,7 +13,6 @@ from Crypto.Random import get_random_bytes
 import socket
 import os
 import time
-import base64
 
 
 public_keyring = {
@@ -84,16 +83,11 @@ class Client:
                 part_key = RSA.importKey(file.read())
                 part_sig = pkcs1_15.new(part_key) # to verify signature
 
-                print("FROM:", from_member)
-                print("message:\n",message)
-
                 # Decrypt session key using RSA.
                 session_key = our_dec.decrypt(bytes.fromhex(message["session_key"]))
                 session_aes = AES.new(session_key, AES.MODE_EAX, bytes.fromhex(message["cipher_nonce"]))
                 plaintext = session_aes.decrypt_and_verify(bytes.fromhex(message["ciphertext"]), bytes.fromhex(message["tag"]))
                 package = json.loads(plaintext.decode("utf-8"))
-
-                print("json plain:\n", package)
 
                 # Verify signature and timestamp.
 
@@ -122,26 +116,7 @@ class Client:
                 else:
                     print(f"BAD TIMESTAMP {timediff} > 30 FROM: {from_member}") #TODO handle better.
 
-
-                    # if timediff < 30:
-                    #     print("trying to verify")
-                    #     h = SHA256.new(package["nonce"])
-                    #     if pkcs1_15.new(part_key).verify(h, bin(package["signature"])):
-                    #         if from_member not in self.secrets:
-                    #             self.secrets[from_member] = 0
-                    #             self.secret_handshakes[from_member] = 1 # Keep track of handshake progress
-                    #         else:
-                    #             self.secret_handshakes[from_member] += 1 # Keep track of handshake progress
-
-                    #         self.secrets[from_member] ^= int(package["nonce"])
-                    #     else:
-                    #         print("BAD SIGNATURE FROM:", from_member)
-                    # else:
-                    #     print(f"BAD TIMESTAMP {timediff} > 30 FROM: {from_member}") #TODO handle better.
-                    # to_send = json.dumps({"nonce": nonce, "signature": our_key.sign(nonce), "timestamp": int(time.time())})
-
-
-        # if recieve all secrets, then send OK.
+        # if receive all secrets, then send OK.
         # record recv from each user.
         if self.check_secret_handshake_complete():
             print("ALL NONCES RECEIVED!")
@@ -350,12 +325,18 @@ class Client:
                         h = SHA256.new(str(nonce).encode()) # why must we do this, python.
                         signature = pkcs1_15.new(our_key).sign(h)
                         timestamp = int(time.time())
-                        print(f"GENERATING NONCE {nonce} FOR {part} WITH SIGNATURE HEX {signature.hex()}")
+
                         session_aes = AES.new(session_key, AES.MODE_EAX)
                         ciphertext, tag = session_aes.encrypt_and_digest(json.dumps({"timestamp": timestamp, "nonce": nonce, "signature": signature.hex()}).encode())
                         to_send = {'session_key': part_enc.encrypt(session_key).hex(), "ciphertext": ciphertext.hex(), "cipher_nonce": session_aes.nonce.hex(), "tag": tag.hex()}
 
                         await self.send_peer_secret_handshake(part, to_send)
+
+        if self.check_secret_handshake_complete():
+            print("ALL NONCES RECEIVED!")
+            await self.send({'type': 'secrets_generated'})
+        else:
+            print("still waiting for participant nonces")
 
 
     # Waits for a message that cannot be automatically handled. (I.E. the result
