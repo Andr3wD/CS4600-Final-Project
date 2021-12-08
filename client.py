@@ -5,6 +5,7 @@ import random
 import sys
 import secrets
 import PySimpleGUI as gui
+import socket
 
 class Client:
     @classmethod # Since python doesn't let `async def __init__()`
@@ -14,7 +15,8 @@ class Client:
         """
 
         self = Client()
-        self.connection = await websockets.connect('ws://localhost:12345') # Connect to server
+        self_ip = socket.gethostbyname(socket.gethostname())
+        self.connection = await websockets.connect(f'ws://{self_ip}:12345') # Connect to server
         self.unhandled_messages = asyncio.Queue()
         self.active_participants = []
         self.secrets = [5436] # All secret pairs this client has with other clients. TODO remove the testing numbers.

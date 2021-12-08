@@ -1,6 +1,7 @@
 import asyncio
 import json
 import websockets
+import socket
 
 
 class Participant:
@@ -191,7 +192,8 @@ async def continually_send_anonymous_broadcast_requests():
 
 
 def main():
-    server = websockets.serve(handler, 'localhost', 12345)
+    self_ip = socket.gethostbyname(socket.gethostname())
+    server = websockets.serve(handler, self_ip, 12345)
     asyncio.get_event_loop().run_until_complete(server)
     print('Server running!')
     asyncio.get_event_loop().create_task(
