@@ -92,7 +92,7 @@ class Client:
                 # Verify signature and timestamp.
                 timediff = int(time.time()) - package["timestamp"]
                 if timediff < 300:
-                    h = SHA256.new(str(package["nonce"]).encode())
+                    h = SHA256.new(str(package["seed"]).encode())
                     valid = False
                     try:
                         part_sig.verify(h, bytes.fromhex(package["signature"]))
@@ -108,7 +108,7 @@ class Client:
                         else:
                             self.secret_handshakes[from_member] += 1 # Keep track of handshake progress
 
-                        self.secrets[from_member] ^= int(package["nonce"])
+                        self.secrets[from_member] ^= int(package["seed"])
                     else:
                         print("BAD SIGNATURE FROM:", from_member)
 
@@ -118,10 +118,10 @@ class Client:
         # if receive all secrets, then send OK.
         # record recv from each user.
         if self.check_secret_handshake_complete():
-            print("ALL NONCES RECEIVED!")
+            print("ALL SEEDS RECEIVED!")
             await self.send({'type': 'secrets_generated'})
         else:
-            print("still waiting for participant nonces")
+            print("Still waiting for random seeds from all participants")
 
     def check_secret_handshake_complete(self):
         """
@@ -303,7 +303,7 @@ class Client:
         self.message_send_queue.append(message)
 
     async def generate_pairwise_secrets(self):
-        nonce = random.getrandbits(256) # generate our random nonce.
+        seed = random.getrandbits(256) # generate our random seed.
         # Sign with self private key, then encrypt with participant's public key.
 
         with open(self.name.lower() + "_private.pem", 'r') as priv_file:
@@ -322,32 +322,32 @@ class Client:
                         else:
                             self.secret_handshakes[part] += 1
 
-                        self.secrets[part] ^= nonce # Xor any existing secret (would be the participant's nonce or 0) with our nonce.
+                        self.secrets[part] ^= seed # Xor any existing secret (would be the participant's seed or 0) with our seed.
 
                         part_key = RSA.importKey(file.read()) # Import participant's public key.
                         part_enc = PKCS1_OAEP.new(part_key) # Init participant's public key for ENCRYPTION
                         session_key = get_random_bytes(16) # Generate random session key
 
-                        h = SHA256.new(str(nonce).encode()) # Hash our nonce
+                        h = SHA256.new(str(seed).encode()) # Hash our seed
                         signature = pkcs1_15.new(our_key).sign(h) # Sign our hash
                         timestamp = int(time.time()) # Generate timestamp
 
                         session_aes = AES.new(session_key, AES.MODE_EAX) # Encrypt session key with participant's public key.
 
-                        # Encrypt {timestamp, nonce, signature} with the session key.
+                        # Encrypt {timestamp, seed, signature} with the session key.
                         # This is done because RSA cannot encrypt a large amount of bits, but AES can.
-                        ciphertext, tag = session_aes.encrypt_and_digest(json.dumps({"timestamp": timestamp, "nonce": nonce, "signature": signature.hex()}).encode())
+                        ciphertext, tag = session_aes.encrypt_and_digest(json.dumps({"timestamp": timestamp, "seed": seed, "signature": signature.hex()}).encode())
                         # Bundle everything up for final sending.
                         to_send = {'session_key': part_enc.encrypt(session_key).hex(), "ciphertext": ciphertext.hex(), "cipher_nonce": session_aes.nonce.hex(), "tag": tag.hex()}
 
                         await self.send_peer_secret_handshake(part, to_send)
 
-        # If all nonces received then tell the server.
+        # If all seeds received then tell the server.
         if self.check_secret_handshake_complete():
-            print("ALL NONCES RECEIVED!")
+            print("ALL SEEDS RECEIVED!")
             await self.send({'type': 'secrets_generated'})
         else:
-            print("still waiting for participant nonces")
+            print("Still waiting for random seeds from all participants")
 
 
     # Waits for a message that cannot be automatically handled. (I.E. the result
