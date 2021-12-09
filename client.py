@@ -11,7 +11,6 @@ from Crypto.Hash import SHA256
 from Crypto.Cipher import PKCS1_OAEP, AES
 from Crypto.Random import get_random_bytes
 import socket
-import os
 import time
 
 
@@ -29,27 +28,26 @@ class Client:
         """
 
         self = Client()
-        self_ip = socket.gethostbyname(socket.gethostname())
+        self_ip = socket.gethostbyname(socket.gethostname()) # Get local ip.
         # If you're the professor (or grader), this was swapped out for the public IPv4 of the AWS IC2 instance for the demo. See the demo branch.
         self.connection = await websockets.connect(f'ws://{self_ip}:12345') # Connect to server
         self.unhandled_messages = asyncio.Queue()
-        self.active_participants = []
-        self.all_participants = []
+        self.active_participants = [] # All currently active participants (connected to server)
+        self.all_participants = [] # All participants setup for this group (active or not)
         self.secrets = {} # All secret pairs this client has with other clients.
         self.secret_handshakes = {} # Keep track of handshake progress {participant_name: stage} where stage=1 if initiated by one side, and stage=2 if done.
-        self.message_send_queue = []
-        self.sent_messages = {}
-        self.unhandled_anon_messages = []
-        self.collision_timeout = 0
-        self.MAX_MESSAGE_BYTES = 280
-        self.name = ""
+        self.message_send_queue = [] # Messages to send
+        self.sent_messages = {} # Messages sent on this index in the form [index: message]
+        self.unhandled_anon_messages = [] # Messages to be handled by the GUI
+        self.collision_timeout = 0 # Current collision timeout to wait.
+        self.MAX_MESSAGE_BYTES = 280 # Maximum bytes for a message (sets the size of each anonymous broadcast)
+        self.name = "" # The name of this client
         asyncio.get_event_loop().create_task(self.poll_loop()) # Start polling for messages.
         return self
 
     async def poll_loop(self):
         while True:
-            # TODO Need DH key exchange types for getting keys between pairs for each pair.
-
+            # Receive all incoming messages and handle them appropriately
             message = json.loads(await self.connection.recv())
             if message['type'] == 'receive_from_peer':
                 asyncio.get_event_loop().create_task(
@@ -92,7 +90,6 @@ class Client:
                 package = json.loads(plaintext.decode("utf-8"))
 
                 # Verify signature and timestamp.
-
                 timediff = int(time.time()) - package["timestamp"]
                 if timediff < 300:
                     h = SHA256.new(str(package["nonce"]).encode())
@@ -116,7 +113,7 @@ class Client:
                         print("BAD SIGNATURE FROM:", from_member)
 
                 else:
-                    print(f"BAD TIMESTAMP {timediff} > 30 FROM: {from_member}") #TODO handle better.
+                    print(f"BAD TIMESTAMP {timediff} > 30 FROM: {from_member}")
 
         # if receive all secrets, then send OK.
         # record recv from each user.
@@ -127,6 +124,12 @@ class Client:
             print("still waiting for participant nonces")
 
     def check_secret_handshake_complete(self):
+        """
+            Verifies if this client has finished the pairwise secret handshake with every other participant.
+
+            returns True if so
+            returns False otherwise
+        """
         for part in self.active_participants:
             if part != self.name and (part not in self.secret_handshakes or self.secret_handshakes[part] != 2):
                 return False
@@ -137,19 +140,16 @@ class Client:
         print('received', message, 'from', from_member)
 
     def handle_anonymous_broadcast(self, messages: dict[str, int], index: int):
-        # TODO maybe change to look at sender peer name, kick out peer if missing message for more than a timeout time, maybe.
-        # Or have the server send a 'client_disconnect' that will kick that peer out.
-
         if len(messages)-1 == len(self.secrets):
-            decoded_message = 0
             # We've gotten all messages.
+
+            decoded_message = 0
             for user in messages:
                 decoded_message ^= messages[user]
 
-            # print("decoded:", decoded_message)
+            # if empty message, then stop early.
             if decoded_message == 0:
                 return
-
 
             if index in self.sent_messages: # If we sent a message
                 if self.sent_messages[index] == decoded_message: # If the message came through successfully
@@ -160,16 +160,15 @@ class Client:
                     # Bad, message garbled.
                     # Message hasn't been successfully sent.
 
-                    # TODO maybe change timeout protocol?
                     self.collision_timeout = secrets.randbelow(self.get_collision_padding_len()) # Randomly choose a collision timeout.
                     print(f"WARN! Message collision. Waiting {self.collision_timeout} windows before retrying.")
             elif not self.verify_no_collision(decoded_message): # there's a collision between other peers
                 print("WARN! Collision between peers, discarding recieved message.")
             else:
-                extracted = self.extract_msg(decoded_message)
-                # print("extracted message:", extracted)
+                extracted = self.extract_msg(decoded_message) # Extracted message in bytes
+
+                # Turns bytes to string, removing all extra null bytes.
                 str_msg = extracted.to_bytes(self.MAX_MESSAGE_BYTES, sys.byteorder).decode("ascii").rstrip("\x00")
-                # print(f"Anon: {str_msg}")
                 self.unhandled_anon_messages.append((str_msg, False)) # (msg, this_client?)
         else:
             print("ERR! Missing peer broadcast!")
@@ -250,14 +249,14 @@ class Client:
             Returns:
                 the number of bits to select from the collision space to set as 1.
         """
-        return self.get_collision_padding_len()//2 # Maybe divide by the number of participants? TODO LOOKAT.
+        return self.get_collision_padding_len()//2
 
     def get_collision_padding_len(self) -> int:
         """
             Returns:
                 the length of the collision padding space.
         """
-        return len(self.secrets)*2 #TODO maybe change to be better?
+        return len(self.secrets)*2
 
     async def handle_anonymous_broadcast_request(self, index: int):
         """
@@ -288,8 +287,8 @@ class Client:
             self.collision_timeout -= 1
 
         for part in self.secrets:
-            # One of the papers uses a random seed, but some sort of key generation scheme probably works as well.
-            random.seed(self.secrets[part] ^ index)
+            random.seed(self.secrets[part] ^ index) # Set random seed
+            # XOR next secret session keys.
             temp_msg ^= random.getrandbits((self.MAX_MESSAGE_BYTES*8)+collision_padding) # Twitter character limit is 280. *8 for 1/byte character ASCII encoding.
 
         await self.send({'type': 'anonymous_broadcast', 'index': index, 'message': temp_msg})
@@ -304,32 +303,41 @@ class Client:
         self.message_send_queue.append(message)
 
     async def generate_pairwise_secrets(self):
-        nonce = random.getrandbits(256)
+        nonce = random.getrandbits(256) # generate our random nonce.
         # Sign with self private key, then encrypt with participant's public key.
 
         with open(self.name.lower() + "_private.pem", 'r') as priv_file:
-            our_key = RSA.importKey(priv_file.read())
+            our_key = RSA.importKey(priv_file.read()) # our private key
+
+            # parse through all other participants than this participant..
             for part in self.active_participants:
                 if part != self.name:
-                    with open(public_keyring[part], 'r') as file:
-                        print("sending to", part)
+                    with open(public_keyring[part], 'r') as file: # public key of participant.
+
+                        # If handshake not started already, then init it.
+                        # Otherwise, mark the handshake as being in the next stage.
                         if part not in self.secrets:
                             self.secrets[part] = 0
                             self.secret_handshakes[part] = 1
                         else:
                             self.secret_handshakes[part] += 1
 
-                        self.secrets[part] ^= nonce
-                        part_key = RSA.importKey(file.read())
-                        part_enc = PKCS1_OAEP.new(part_key)
-                        session_key = get_random_bytes(16)
+                        self.secrets[part] ^= nonce # Xor any existing secret (would be the participant's nonce or 0) with our nonce.
 
-                        h = SHA256.new(str(nonce).encode()) # why must we do this, python.
-                        signature = pkcs1_15.new(our_key).sign(h)
-                        timestamp = int(time.time())
+                        part_key = RSA.importKey(file.read()) # Import participant's public key.
+                        part_enc = PKCS1_OAEP.new(part_key) # Init participant's public key for ENCRYPTION
+                        session_key = get_random_bytes(16) # Generate random session key
 
-                        session_aes = AES.new(session_key, AES.MODE_EAX)
+                        h = SHA256.new(str(nonce).encode()) # Hash our nonce
+                        signature = pkcs1_15.new(our_key).sign(h) # Sign our hash
+                        timestamp = int(time.time()) # Generate timestamp
+
+                        session_aes = AES.new(session_key, AES.MODE_EAX) # Encrypt session key with participant's public key.
+
+                        # Encrypt {timestamp, nonce, signature} with the session key.
+                        # This is done because RSA cannot encrypt a large amount of bits, but AES can.
                         ciphertext, tag = session_aes.encrypt_and_digest(json.dumps({"timestamp": timestamp, "nonce": nonce, "signature": signature.hex()}).encode())
+                        # Bundle everything up for final sending.
                         to_send = {'session_key': part_enc.encrypt(session_key).hex(), "ciphertext": ciphertext.hex(), "cipher_nonce": session_aes.nonce.hex(), "tag": tag.hex()}
 
                         await self.send_peer_secret_handshake(part, to_send)
@@ -348,16 +356,28 @@ class Client:
         return await self.unhandled_messages.get()
 
     async def send(self, message):
+        """
+            Send message to server. Message is serialized into json before sending.
+        """
         await self.connection.send(json.dumps(message))
         return await self.recv_unhandled()
 
     async def join(self, group: str, participant: str, password: str):
+        """
+            Send a request to the server to join the given group as the given participant.
+        """
         return await self.send({'type': 'join', 'group': group, 'participant': participant, 'password': password})
 
     async def send_to_peer(self, participant: str, message):
+        """
+            Send a request to the server to send a message to the provided participant peer.
+        """
         return await self.send({'type': 'send_to_peer', 'participant': participant, 'message': message})
 
     async def send_peer_secret_handshake(self, participant: str, message):
+        """
+            Send a message to the server to send a handshake message to the provided participant peer.
+        """
         return await self.send({'type': 'send_to_peer_secret_handshake', 'participant': participant, 'message': message})
 
 async def startGUI():
@@ -406,7 +426,6 @@ async def startGUI():
 
 
 async def generate_and_poll_chat(client: Client):
-    # TODO restrict input to message character limit.
     layout = [
         [
             gui.Frame("Chat", [
