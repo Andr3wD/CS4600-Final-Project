@@ -92,7 +92,7 @@ class Client:
                 # Verify signature and timestamp.
 
                 timediff = int(time.time()) - package["timestamp"]
-                if timediff < 30:
+                if timediff < 300:
                     h = SHA256.new(str(package["nonce"]).encode())
                     valid = False
                     try:
@@ -255,7 +255,7 @@ class Client:
             Returns:
                 the length of the collision padding space.
         """
-        return len(self.secrets)+1 #TODO maybe change to be better?
+        return len(self.secrets)*2 #TODO maybe change to be better?
 
     async def handle_anonymous_broadcast_request(self, index: int):
         """
