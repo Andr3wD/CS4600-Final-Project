@@ -255,6 +255,7 @@ class Session:
             # Clear the session of the participant this client was connected as, indicating
             # that participant is no longer connected.
             self.participating_as.session = None
+            self.participating_as.secrets_generated = False
             self.participating_as = None
 
             # TODO make this actually do something on the client side...
