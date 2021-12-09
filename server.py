@@ -48,18 +48,34 @@ class Group:
         return None
 
     def check_all_secrets_generated(self):
+        """
+            Checks if all participants in this group have sent the message that they've generated all their pairwise secrets.
+
+            returns True if so.
+            returns False otherwise
+        """
         for participant in self.participants:
             if participant.session is None or not participant.secrets_generated:
                 return False
         return True
 
     def check_all_participants_joined(self):
+        """
+            Checks if all participants in this group have connected to the server and joined this group.
+
+            returns True if all participants set up for this group are connected to the server and have joined this group.
+            returns False otherwise.
+        """
         for part in self.participants:
             if part.session is None:
                 return False
         return True
 
     async def start_secret_generation(self):
+        """
+            Asks all participants in this group to start generating secret keys among themselves.
+            Does so by sending a message {'type': 'generate_secrets'} to all participants in this group.
+        """
         for part in self.participants:
             if part.session is not None:
                 await part.session.send_message({'type': 'generate_secrets'})
@@ -171,13 +187,13 @@ class Session:
             for part in temp_old:
                 await part.session.send_message({'type': 'active_participant_update', 'active_participants': temp_new})
 
+            all_participants = [p.name for p in self.group.participants]
             # Inform the client that they joined successfully, as well as who else has joined.
-            await self.send_message({'type': 'success', 'active_participants': temp_new})
+            await self.send_message({'type': 'success', 'active_participants': temp_new, 'all_participants': all_participants})
 
             # Ask clients to generate secrets among themselves.
             if self.group.check_all_participants_joined():
                 await self.group.start_secret_generation()
-                
 
         # Indicates that a client wants to send a message to someone else in the group.
         elif t == 'send_to_peer' or t == 'send_to_peer_secret_handshake':
@@ -201,6 +217,7 @@ class Session:
                 await self.send_error('Missing required parameter "message".')
                 return
 
+            # If send peer handshake, then send it as receive peer handshake.
             if t == 'send_to_peer_secret_handshake':
                 await participant.session.send_message({'type': 'receive_from_peer_secret_handshake', 'from': self.participating_as.name, 'message': message['message']})
             else:
@@ -243,6 +260,7 @@ class Session:
                         await participant.session.send_message(send)
             # Inform the client that the request was successful.
             await self.send_success()
+        # Indicates that this participant has generated all of their pairwise secrets with all other participants.
         elif t == 'secrets_generated':
             self.participating_as.secrets_generated = True
         else:
@@ -258,7 +276,7 @@ class Session:
             self.participating_as.secrets_generated = False
             self.participating_as = None
 
-            # TODO make this actually do something on the client side...
+            # Tell all other clients that this client has disconnected.
             current_parts = self.group.get_active_participants()
             active_parts = [p.name for p in current_parts]
             for part in current_parts:
@@ -272,7 +290,7 @@ async def continually_send_anonymous_broadcast_requests():
         for group in groups:
             await group.try_start_anonymous_message()
         await asyncio.sleep(1)
-        
+
 
 # Called for every incoming connection on the websocket server.
 async def handler(connection, _path):

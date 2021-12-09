@@ -29,10 +29,12 @@ class Client:
         """
 
         self = Client()
-        # self_ip = socket.gethostbyname(socket.gethostname())
-        self.connection = await websockets.connect('ws://3.82.218.10:12345') # Connect to server
+        self_ip = socket.gethostbyname(socket.gethostname())
+        # If you're the professor (or grader), this was swapped out for the public IPv4 of the AWS IC2 instance for the demo. See the demo branch.
+        self.connection = await websockets.connect(f'ws://{self_ip}:12345') # Connect to server
         self.unhandled_messages = asyncio.Queue()
         self.active_participants = []
+        self.all_participants = []
         self.secrets = {} # All secret pairs this client has with other clients.
         self.secret_handshakes = {} # Keep track of handshake progress {participant_name: stage} where stage=1 if initiated by one side, and stage=2 if done.
         self.message_send_queue = []
@@ -332,6 +334,7 @@ class Client:
 
                         await self.send_peer_secret_handshake(part, to_send)
 
+        # If all nonces received then tell the server.
         if self.check_secret_handshake_complete():
             print("ALL NONCES RECEIVED!")
             await self.send({'type': 'secrets_generated'})
@@ -357,21 +360,6 @@ class Client:
     async def send_peer_secret_handshake(self, participant: str, message):
         return await self.send({'type': 'send_to_peer_secret_handshake', 'participant': participant, 'message': message})
 
-async def main():
-    client = await Client.create()
-    group = input('Enter group name > ')
-    participant = input('Enter participant name > ')
-    password = input('Enter group password > ')
-    # TESTING
-    if participant == "Bob":
-        client.message_send_queue.append("testmsg from BOB")
-    else:
-        client.message_send_queue.append("testmsg from ALICE")
-
-    print(await client.join(group, participant, password))
-    print(await client.send_to_peer('Alice', ['test', 123]))
-
-
 async def startGUI():
     layout = [
         [gui.Text("Please input the group name below.")],
@@ -385,25 +373,33 @@ async def startGUI():
 
     window = gui.Window("Anonymous Broadcast.", layout)
     client = await Client.create()
+
     # Wait for acceptable input.
     while True:
-        event, values = window.read(0)
+        event, values = window.read(0) # Poll events
 
         if event == "Quit" or event == gui.WINDOW_CLOSED:
             exit()
         elif event == "Join":
+            # Validate inputs
             if values[0] != '' and values[1] != '' and values[2] != '':
+                # Attempt to join server
                 response = await client.join(values[0], values[1], values[2])
-                print(response)
-                print(response["type"])
+
+                # If server replies with an error type, then display it next to the buttons.
                 if response["type"] == "error":
                     window["-ERR-"].update(value=response["description"])
                 elif response["type"] == "success":
+                    client.name = values[1] # Set client name
+                    # Set the current active participants.
                     client.active_participants = response["active_participants"]
-                    client.name = values[1]
+                    print(response)
+                    client.all_participants = response["all_participants"]
+
+                    # Start new thread for chat.
                     future = asyncio.ensure_future(generate_and_poll_chat(client))
                     window.close()
-                    await future
+                    await future # Wait for chat thread to exit.
                     break
             else:
                 window["-ERR-"].update(value="Missing group, user name, and/or password!")
@@ -420,31 +416,42 @@ async def generate_and_poll_chat(client: Client):
                 [gui.Multiline(size=(30, 40), key="-PARTICIPANTS-", disabled=True)]
             ])
         ],
-        [gui.Input(key="-INPUT-"), gui.Button("Send", bind_return_key=True), gui.Button("Leave")]
+        [gui.Input(key="-INPUT-", disabled=True), gui.Button("Send", bind_return_key=True, key="-SEND-", disabled=True), gui.Button("Leave")]
     ]
     window = gui.Window("Anonymous Broadcast Chatroom.", layout)
 
     while True:
         await asyncio.sleep(0.1)
-        event, values = window.read(0)
-        # print(event, values)
-        if event == gui.WIN_CLOSED or event == "Leave":
+        event, values = window.read(0) # Poll GUI for events and values
+
+        if event == gui.WIN_CLOSED or event == "Leave": # If leave or window closed.
             break
         else:
-            window["-PARTICIPANTS-"].update("\n".join(client.active_participants))
+            window["-PARTICIPANTS-"].update("\n".join(client.active_participants)) # update active participant list
+
+            # If missing participants, then disable the input.
+            if len(client.active_participants) == len(client.all_participants):
+                window["-INPUT-"].update(disabled=False)
+                window["-SEND-"].update(disabled=False)
+                window.refresh()
+            else:
+                window["-INPUT-"].update(disabled=True)
+                window["-SEND-"].update(disabled=True)
+                window.refresh()
+
             if len(client.unhandled_anon_messages) > 0:
                 # printing instead of updating for efficiency (space and time).
                 # But since multithreaded, can't expect the list to not change (between "".join and clearning the list)
                 msg_tup = client.unhandled_anon_messages.pop(0)
-                if msg_tup[1]: # if this message was from this client
+                if msg_tup[1]: # if this message was from this client, then print it green.
                     window["-CHAT-"].print(msg_tup[0].strip(), text_color="green")
                 else:
                     window["-CHAT-"].print(msg_tup[0].strip())
 
-
-            if event == "Send" and values["-INPUT-"] != "":
-                client.send_anonymous_message(values["-INPUT-"])
-                window["-INPUT-"].update("")
+            # If GUI send event is activated and input isn't empty.
+            if event == "-SEND-" and values["-INPUT-"] != "":
+                client.send_anonymous_message(values["-INPUT-"]) # Add message to queue to be sent.
+                window["-INPUT-"].update("") # Clear input
 
     window.close()
     exit()
